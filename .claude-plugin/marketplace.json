@@ -1,0 +1,9 @@
+{
+  "name": "claude-cockpit",
+  "owner": { "name": "I0B0M", "url": "https://github.com/I0B0M" },
+  "metadata": { "description": "A cockpit for Claude Code: usage tiles and a live, clickable activity map above the prompt." },
+  "plugins": [
+    { "name": "session-hud", "source": "./plugins/session-hud", "description": "5-hour, weekly, context and cache tiles, colour-coded green to red." },
+    { "name": "cockpit-map", "source": "./plugins/cockpit-map", "description": "A live activity map; click to enlarge and see what each station was used for." }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "session-hud",
+  "version": "1.0.0",
+  "description": "Four tiles above the prompt: 5-hour limit, weekly limit, context and cache countdown, colour-coded green to red. Plus your step progress.",
+  "author": {
+    "name": "I0B0M",
+    "url": "https://github.com/I0B0M"
+  },
+  "homepage": "https://github.com/I0B0M/claude-cockpit",
+  "repository": "https://github.com/I0B0M/claude-cockpit",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "usage",
+    "rate limits",
+    "context",
+    "cache",
+    "dashboard"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "cacheMinutes": {
+      "type": "string",
+      "title": "Prompt cache lifetime (minutes)",
+      "options": [
+        "60",
+        "5"
+      ],
+      "default": "60",
+      "description": "60 if your sessions use the 1-hour prompt cache, 5 for the default cache. Sets when the cache tile counts down to cold."
+    }
+  }
+}
