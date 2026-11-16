@@ -30,6 +30,7 @@ const KEEP_OUTCOMES = 300
 const POLL = '0.25'
 const HOLD_LIMIT_MS = 10 * 60 * 1000
 const MEDIA = /\.(png|jpe?g|gif|webp|mp4|mov|webm|mp3|wav|m4a|pdf|docx|pptx|xlsx|epub)$/i
+const FIND_MEDIA = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'mp3', 'wav', 'm4a', 'pdf', 'docx', 'pptx', 'xlsx', 'epub'].map(x => `-iname "*.${x}"`).join(' -o ')
 const PLAN_TOOL = /update_plan$/
 const WRAP_TOOL = /__wrap_up$/
 
@@ -91,7 +92,8 @@ const hash = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) |
 /** Files this task made that no tool call announced: a render, frames, thumbnails a script wrote. */
 async function scanMade($: EngineInterface, cwd: string, marker: string): Promise<string[]> {
   const run = await $.process.run(
-    ['bash', '-c', 'find "$1" -maxdepth 6 \\( -name .git -o -name node_modules -o -name ".venv*" -o -name .cache -o -name __pycache__ -o -name Library \\) -prune -o -type f -newer "$2" -print 2>/dev/null | head -n 2000', 'cockpit', cwd, marker],
+    // The media filter runs inside find, so the cap counts only media: a day of logs or code edits never pushes a render past it.
+    ['bash', '-c', `find "$1" -maxdepth 6 \\( -name .git -o -name node_modules -o -name ".venv*" -o -name .cache -o -name __pycache__ -o -name Library \\) -prune -o -type f -newer "$2" \\( ${FIND_MEDIA} \\) -print 2>/dev/null | head -n 2000`, 'cockpit', cwd, marker],
     { timeoutMs: 10_000 },
   )
   return run.stdout.split('\n').filter(p => MEDIA.test(p))
