@@ -43,6 +43,8 @@ test('at rest: the step on top, four named numbers, no map', async ($, on) => {
   for (const words of ['"Done"', '"✓ Read band code"', '"Now"', '"Next"', '"Write tests"']) expect(json).toContain(words)
   expect(json).not.toContain('Open full map')
   expect(json).not.toContain('5-hour resets')
+  const order = ['"5-hour"', '"Weekly"', '"Context"', '"Cache"'].map(w => json.indexOf(w))
+  expect(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1]!))).toBe(true)
   expect(json).not.toContain('CLAUDE')
   await ui.unmount()
 })

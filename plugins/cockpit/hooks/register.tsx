@@ -523,9 +523,9 @@ export const register: Register = (on, options) => {
           {plan && !plan.isDone ? <Text size="footnote" tabular dimColor>{plan.index}/{plan.total}</Text> : null}
           {chips}
         </Box>
-        {gauge('ctx', ctx, ctxColor, ctx === null ? '–' : `${Math.round(ctx)}%`, 'ctx', 'Context used')}
         {gauge('5h', five?.percentUsed ?? null, five ? heat(five.percentUsed) : GREY, five ? `${Math.round(five.percentUsed)}%` : '–', '5h', '5-hour limit used')}
         {gauge('wk', week?.percentUsed ?? null, week ? heat(week.percentUsed) : GREY, week ? `${Math.round(week.percentUsed)}%` : '–', 'wk', 'Weekly limit used')}
+        {gauge('ctx', ctx, ctxColor, ctx === null ? '–' : `${Math.round(ctx)}%`, 'ctx', 'Context used')}
         {narrow || left === null ? null : gauge('cache', left > 0 ? (left / CACHE_TTL_MS) * 100 : 0, cacheColor, left > 0 ? countdown(left) : 'cold', 'cache', 'Cache time left')}
         <Button key="cockpit-more" plain dimColor label={isOpen ? '⌃' : '⌄'} onPress={() => void quietly(() => update($, open, v => !v))} />
       </Box>
@@ -593,16 +593,16 @@ export const register: Register = (on, options) => {
     )
     // Opened, the reset times and the rest sit beside the map, so the card above keeps its shape.
     const details = [
-      u?.contextTokens != null ? `Context: ${human(u.contextTokens)} used` : '',
       five?.resetsAt ? `5-hour resets ${clockOf(five.resetsAt)}` : '',
       week?.resetsAt ? `Weekly resets ${weekdayOf(week.resetsAt)}` : '',
+      u?.contextTokens != null ? `Context: ${human(u.contextTokens)} used` : '',
       c?.hit != null ? `Cache: ${Math.round(c.hit * 100)}% hit` : '',
     ].filter(Boolean)
     const rings = (
       <Box key="rings" flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
-        {cell('r-ctx', ctx, ctxColor, ctx === null ? '–' : `${Math.round(ctx)}%`, 'Context', u?.contextTokens != null ? `${human(u.contextTokens)} used` : '', 'Context used')}
         {cell('r-5h', five?.percentUsed ?? null, five ? heat(five.percentUsed) : GREY, five ? `${Math.round(five.percentUsed)}%` : '–', '5-hour', five?.resetsAt ? `resets ${clockOf(five.resetsAt)}` : '', '5-hour limit used')}
         {cell('r-wk', week?.percentUsed ?? null, week ? heat(week.percentUsed) : GREY, week ? `${Math.round(week.percentUsed)}%` : '–', 'Weekly', week?.resetsAt ? `resets ${weekdayOf(week.resetsAt)}` : '', 'Weekly limit used')}
+        {cell('r-ctx', ctx, ctxColor, ctx === null ? '–' : `${Math.round(ctx)}%`, 'Context', u?.contextTokens != null ? `${human(u.contextTokens)} used` : '', 'Context used')}
         {narrow || left === null ? null : cell('r-cache', left > 0 ? (left / CACHE_TTL_MS) * 100 : 0, cacheColor, left > 0 ? countdown(left) : 'cold', 'Cache', c?.hit != null ? `${Math.round(c.hit * 100)}% hit` : '', 'Cache time left')}
         <Button key="cockpit-more" plain dimColor label={isOpen ? '⌃' : '⌄'} onPress={() => void quietly(() => update($, open, v => !v))} />
       </Box>
