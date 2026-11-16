@@ -1,6 +1,6 @@
 {
   "name": "cockpit",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Above the prompt: the current step, context, 5-hour, weekly and cache. Opens to show the activity map; grows to hold a delete, show workers, and show what the work produced.",
   "author": {
     "name": "I0B0M",

@@ -6,14 +6,37 @@ A cockpit for Claude Code: your usage limits and a live map of what Claude is do
 
 *Preview drawn from the mods' own drawing code. The desktop app's buttons and fonts look slightly different.*
 
-Two mods that work together:
+## Cockpit (the one to install)
+
+**cockpit** replaces the two older mods below with one card above the prompt:
+
+- **Resting:** the current step with "2 of 3", then **Context**, **5-hour**, **Weekly** and **Cache**, each with when it resets. Chips appear only when needed: battery low, files to commit, Modal spend, Hand off.
+- **Opened (⌄):** the activity map slides in, with an **Open full map** link to a Map tab beside the chat.
+- **Grows when it matters:** holds a large delete for your answer (Cancel is the default), shows running workers, and lists what the work produced.
+
+```
+/plugin install cockpit --marketplace I0B0M/claude-cockpit
+```
+
+Options (`/config`, or `pluginConfigs.cockpit.options` in `~/.claude/settings.json`):
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `cacheMinutes` | `60` | `60` on the 1-hour prompt cache, `5` on the default. |
+| `handoffAt` | `55` | Context % at which the ring turns orange and Hand off appears. Empty turns it off. |
+| `modalNames` | none | `profile=name` pairs, such as `myprofile=A`. The Modal chip reads `docs/modal-spend.csv` in the session folder and shows only these accounts. |
+| `modalCap` | `29` | The Modal chip turns orange at $20 and red within $2 of this cap. |
+
+## The two older mods
+
+Still here for anyone who installed them; Cockpit does both jobs.
 
 | Mod | What it shows |
 | --- | --- |
 | **session-hud** | Four tiles: **5-hour** limit, **weekly** limit, **context** used, and **cache** time left. Plus your step progress while Claude works through a task list. |
 | **cockpit-map** | A small live map of the work: files, shell, network, browser, agents, skills, hooks, memory and the model light up as they are used. Press **⤢** to enlarge it, then press a station to see what it was used for. |
 
-## Install
+### Install
 
 Both mods, at the prompt of a Claude Code session:
 
@@ -75,6 +98,8 @@ Neither mod calls a model, uses the network, reads your files or runs programs. 
 ## Developing
 
 ```bash
+claude plugin validate plugins/cockpit
+claude plugin test plugins/cockpit
 claude plugin validate plugins/session-hud
 claude plugin test plugins/session-hud
 claude plugin validate plugins/cockpit-map
