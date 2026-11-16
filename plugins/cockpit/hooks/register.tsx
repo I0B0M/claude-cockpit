@@ -8,7 +8,7 @@ import { classify as classifyRisk, measure, resolveDir } from './blast.mjs'
 import {
   BLUE, GREEN, GREY, ORANGE, RED, YELLOW,
   activityOf, applyPlan, applyTaskUpdate, asksForOutcomes, bar, classify, clockOf, costOf, countdown, elapsed,
-  firstLine, groupMade, groupOf, heat, human, modelTag, parseModalCsv, parseNames, parsePmset, planLine, PREVIEWABLE, ring, weekdayOf,
+  firstLine, groupMade, groupOf, heat, human, modelTag, parseModalCsv, parseNames, parsePmset, planLine, PREVIEWABLE, ring, segments, shownModal, stepTrack, weekdayOf,
 } from './model'
 
 const P = 'cockpit'
@@ -35,7 +35,6 @@ const MAP = {
   compact: true,
 }
 const MAP_KEEP = 80
-const COMMIT_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2.6" fill="none" stroke="#98989d" stroke-width="1.5"/><path d="M1 7h3.4M9.6 7H13" stroke="#98989d" stroke-width="1.5" stroke-linecap="round"/></svg>'
 const batteryIcon = (pct: number): string =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 11"><rect x=".5" y=".5" width="16.5" height="10" rx="2.6" fill="none" stroke="#98989d"/><rect x="18" y="3.5" width="1.6" height="4" rx=".8" fill="#98989d"/><rect x="2" y="2" width="${Math.max(1, Math.round((13.5 * pct) / 100))}" height="7" rx="1.4" fill="#ff453a"/></svg>`
 /** What the map shows, in words, for a reader that cannot see it. */
@@ -60,7 +59,6 @@ const DRY_RUNS: { match: RegExp; flag: RegExp }[] = [{ match: /\bcleanup_video\.
 // What is kept only while this module is loaded: a held call's answer, the paths a task edited, previews.
 let decision: string | null = null
 let holding = false
-let touched = new Set<string>()
 const previews = new Map<string, string>()
 
 const isNotice = (text: string) => text.trimStart().startsWith('<task-notification>')
@@ -168,15 +166,6 @@ async function scanMade($: EngineInterface, cwd: string, marker: string): Promis
     { timeoutMs: 10_000 },
   )
   return run.stdout.split('\n').filter(p => MEDIA.test(p))
-}
-
-async function countDirty($: EngineInterface, cwd: string): Promise<number> {
-  if (touched.size === 0) return 0
-  const root = (await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { timeoutMs: 5000 })).stdout.trim()
-  if (!root) return 0
-  const st = await $.process.run(['git', '-C', root, 'status', '--porcelain', '--untracked-files=all'], { timeoutMs: 8000 })
-  const dirty = new Set(st.stdout.split('\n').filter(Boolean).map(l => `${root}/${l.slice(3).replace(/^"|"$/g, '').split(' -> ').pop()}`))
-  return [...touched].filter(p => dirty.has(p)).length
 }
 
 async function readBattery($: EngineInterface): Promise<void> {
@@ -317,8 +306,6 @@ export const register: Register = (on, options) => {
       const at = await $.clock.now()
       await update($, tasks, list => [...list, { n: (list[list.length - 1]?.n ?? 0) + 1, ask: firstLine(e.text, 80), startedAt: at }].slice(-30))
       await update($, workers, list => list.filter(w => w.status === 'run'))
-      await update($, extras, x => ({ ...x, dirty: 0 }))
-      touched = new Set()
       marker = `/tmp/cockpit-mark-${Math.abs(hash(cwd))}`
       await $.process.run(['touch', marker], { timeoutMs: 5000 })
     })
@@ -387,8 +374,6 @@ export const register: Register = (on, options) => {
         const known = new Set((await read($, outcomes)).filter(x => x.task === n && x.path).map(x => x.path!))
         const fresh = (await scanMade($, cwd, marker)).filter(p => !known.has(p))
         for (const g of groupMade(fresh).slice(0, 12)) await addOutcome($, { kind: 'made', title: g.title, detail: g.detail, path: g.path, ok: true })
-        const dirty = await countDirty($, cwd)
-        await update($, extras, x => ({ ...x, dirty }))
       }
       for (const x of (await read($, outcomes)).filter(x => x.task === n && x.path && PREVIEWABLE.test(x.path)).slice(0, 6)) await makePreview($, x.path!)
     })
@@ -473,7 +458,6 @@ export const register: Register = (on, options) => {
           await update($, steps, list => list.map(s => ({ ...s, status: 'completed' as const })))
         }
       }
-      if (typeof input.file_path === 'string' && /^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) touched.add(input.file_path)
       const found = classify({ tool, input, text, isError })
       if (found) await addOutcome($, found)
     })
@@ -502,7 +486,6 @@ export const register: Register = (on, options) => {
     const x = await read($, extras)
     const allTasks = await read($, tasks)
     const task = allTasks[allTasks.length - 1]
-    const results = task ? (await read($, outcomes)).filter(r => r.task === task.n) : []
     const narrow = e.props.bodyColumns < 70
 
     const limit = (kind: string) => u?.limits.find(l => l.kind === kind)
@@ -526,18 +509,9 @@ export const register: Register = (on, options) => {
     const running = team.filter(w => w.status === 'run')
     const status = held ? <Text color={RED}>●</Text> : running.length > 0 || e.props.isWorking ? <Text color={YELLOW}>●</Text> : <Text color={GREEN}>✓</Text>
     const label = held ? 'Waiting on you' : plan ? plan.label : task ? task.ask : 'Ready'
-    const done = task?.endedAt !== undefined && !e.props.isWorking && (results.length > 0 || (task.left?.length ?? 0) > 0 || plan !== null)
+    // The line under the card holds only what needs you now: hand off, a low battery, a Modal job running.
     const chips: RenderChildren[] = []
-    if (done && task) {
-      const made = results.filter(r => r.ok).length
-      const leftN = task.left?.length ?? 0
-      chips.push(<Button key="cockpit-results" plain label={`${made} done${leftN ? ` · ${leftN} left` : ''} · See results`} onPress={() => void quietly(async () => { await update($, viewTask, () => task.n); await openPane($, 'outcomes') })} />)
-    }
-    const doneTeam = team.filter(w => w.status !== 'run')
-    if (running.length === 0 && doneTeam.length > 0) chips.push(<Text key="team" size="footnote" dimColor>✓ {doneTeam.length} {doneTeam.length === 1 ? 'worker' : 'workers'} · ${doneTeam.reduce((s, w) => s + w.cost, 0).toFixed(2)}</Text>)
-    if (x.dirty > 0) chips.push(<Box key="dirty" flexDirection="row" alignItems="center" gap={1}><Svg source={COMMIT_ICON} alt="" width={14} height={14} /><Text size="footnote">{`${x.dirty} ${x.dirty === 1 ? 'file' : 'files'} to commit`}</Text></Box>)
-    const modalShown = Object.entries(x.modal).filter(([, v]) => x.modalRunning > 0 || v >= 20)
-    for (const [name, v] of modalShown) chips.push(<Text key={`modal-${name}`} size="footnote" color={v >= modalCap - 2 ? RED : v >= 20 ? ORANGE : undefined}>{`● Modal ${name} $${Math.round(v)} of $${modalCap}`}</Text>)
+    for (const [name, v] of shownModal(x.modal, x.modalRunning)) chips.push(<Text key={`modal-${name}`} size="footnote" color={v >= modalCap - 2 ? RED : v >= 20 ? ORANGE : undefined}>{`● Modal ${name} running · $${Math.round(v)} of $${modalCap}`}</Text>)
     if (x.battery && x.battery.onBattery && x.battery.percent < 30) chips.push(<Box key="battery" flexDirection="row" alignItems="center" gap={1}><Svg source={batteryIcon(x.battery.percent)} alt="" width={20} height={11} /><Text size="footnote" color={RED}>{`${x.battery.percent}%`}</Text><Text size="footnote" dimColor>Plug in</Text></Box>)
     if (pastHandoff) chips.push(<Button key="cockpit-handoff" plain label="Hand off" onPress={() => void quietly(() => $.prompt.fill({ text: 'Write the handoff for the next chat, then tell me it is ready.', mode: 'replace' }))} />)
 
@@ -603,53 +577,85 @@ export const register: Register = (on, options) => {
       )
     }
 
-    // The resting card: the step on top, then the four numbers with their names. Opened, the map slides in on the left.
-    const meta = (text: string) => (narrow || text === '' ? null : <Text size="caption" dimColor wrap="truncate-end">{text}</Text>)
+    // The resting card, as tall as one step line and one row of numbers: the steps on the left (a colour bar, then
+    // Done, Now, Next), the four numbers on the right. Every text shrinks and ends in an ellipsis, so nothing overlaps.
+    // Opened, the same card keeps its shape and the map comes in underneath.
+    const track = stepTrack(await read($, steps))
+    const stack = e.props.bodyColumns < 96
     const cell = (key: string, pct: number | null, color: string, value: string, name: string, sub: string, alt: string) => (
-      <Box key={key} flexDirection="row" alignItems="center" gap={1} width={narrow ? 11 : 17}>
-        <Svg source={ring(pct ?? 0, color, 26)} alt={alt} width={26} height={26} />
-        <Box flexDirection="column" flexShrink={1}>
-          <Text size="footnote" weight="semibold" tabular color={color === GREEN || color === GREY ? undefined : color}>{value}</Text>
-          <Text size="caption" dimColor>{name}</Text>
-          {meta(sub)}
+      <Box key={key} flexDirection="row" alignItems="center" gap={1} width={11} flexShrink={0}>
+        <Svg source={ring(pct ?? 0, color, 28)} alt={sub === '' ? alt : `${alt}, ${sub}`} width={28} height={28} />
+        <Box flexDirection="column" flexShrink={1} minWidth={0}>
+          <Text size="footnote" weight="semibold" tabular wrap="truncate-end" color={color === GREEN || color === GREY ? undefined : color}>{value}</Text>
+          <Text size="caption" dimColor wrap="truncate-end">{name}</Text>
         </Box>
       </Box>
     )
+    // Opened, the reset times and the rest sit beside the map, so the card above keeps its shape.
+    const details = [
+      u?.contextTokens != null ? `Context: ${human(u.contextTokens)} used` : '',
+      five?.resetsAt ? `5-hour resets ${clockOf(five.resetsAt)}` : '',
+      week?.resetsAt ? `Weekly resets ${weekdayOf(week.resetsAt)}` : '',
+      c?.hit != null ? `Cache: ${Math.round(c.hit * 100)}% hit` : '',
+    ].filter(Boolean)
     const rings = (
-      <Box key="rings" flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
+      <Box key="rings" flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
         {cell('r-ctx', ctx, ctxColor, ctx === null ? '–' : `${Math.round(ctx)}%`, 'Context', u?.contextTokens != null ? `${human(u.contextTokens)} used` : '', 'Context used')}
         {cell('r-5h', five?.percentUsed ?? null, five ? heat(five.percentUsed) : GREY, five ? `${Math.round(five.percentUsed)}%` : '–', '5-hour', five?.resetsAt ? `resets ${clockOf(five.resetsAt)}` : '', '5-hour limit used')}
         {cell('r-wk', week?.percentUsed ?? null, week ? heat(week.percentUsed) : GREY, week ? `${Math.round(week.percentUsed)}%` : '–', 'Weekly', week?.resetsAt ? `resets ${weekdayOf(week.resetsAt)}` : '', 'Weekly limit used')}
         {narrow || left === null ? null : cell('r-cache', left > 0 ? (left / CACHE_TTL_MS) * 100 : 0, cacheColor, left > 0 ? countdown(left) : 'cold', 'Cache', c?.hit != null ? `${Math.round(c.hit * 100)}% hit` : '', 'Cache time left')}
-      </Box>
-    )
-    const progress = plan && !plan.isDone ? (isOpen && task ? `${task.ask} · step ${plan.index} of ${plan.total}` : `${plan.index} of ${plan.total}`) : plan?.isDone ? `${plan.total} of ${plan.total}` : ''
-    const top = (
-      <Box key="top" flexDirection="row" alignItems="center" gap={1}>
-        {status}
-        <Box flexGrow={1} flexShrink={1}><Text size="footnote" weight="semibold" wrap="truncate-end">{label}</Text></Box>
-        {progress && !narrow ? <Box flexShrink={2}><Text size="footnote" tabular dimColor wrap="truncate-end">{progress}</Text></Box> : null}
         <Button key="cockpit-more" plain dimColor label={isOpen ? '⌃' : '⌄'} onPress={() => void quietly(() => update($, open, v => !v))} />
       </Box>
     )
-    const chipRow = chips.length > 0 ? <Box key="chips" flexDirection="row" flexWrap="wrap" gap={1}>{chips}</Box> : null
-    const card = isOpen ? (
-      <Box key="card" flexDirection="column" width="100%" borderStyle="round" borderDimColor paddingX={1} gap={1}>
-        {top}
-        <Box flexDirection={narrow ? 'column' : 'row'} alignItems="center" gap={2}>
-          <Svg source={drawMap(await read($, board), now, MAP)} alt={`Activity map. ${describeBoard(await read($, board))}`} width={196} height={183} />
-          <Box flexDirection="column" flexGrow={1} flexShrink={1} gap={1}>
-            {rings}
-            {chipRow}
-            <Button key="cockpit-fullmap" plain label="Open full map" onPress={() => void quietly(() => openPane($, 'map'))} />
-          </Box>
+    const column = (key: string, title: string, color: string, body: RenderChildren, grow: number) => (
+      <Box key={key} flexDirection="column" flexGrow={grow} flexShrink={1} width={0} minWidth={0}>
+        <Text size="caption" color={color} wrap="truncate-end">{title}</Text>
+        {body}
+      </Box>
+    )
+    const steps3 = track ? (
+      <Box key="steps" flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={0}>
+        <Box flexDirection="row" alignItems="center" gap={1}>
+          <Box flexShrink={1} minWidth={0}><Svg source={segments(track.states, 240)} alt={`Step ${track.index} of ${track.total}`} height={5} /></Box>
+          <Text size="caption" tabular dimColor>{`${track.index} of ${track.total}`}</Text>
+        </Box>
+        <Box flexDirection="row" columnGap={2}>
+          {column('c-done', 'Done', GREEN, <Text size="footnote" dimColor wrap="truncate-end">{track.done === '' ? '–' : `✓ ${track.done}`}</Text>, 1)}
+          {column('c-now', 'Now', YELLOW, <Text size="footnote" weight="semibold" wrap="truncate-end">{held ? 'Waiting on you' : track.now === '' ? 'All done' : track.now}</Text>, 1.3)}
+          {column('c-next', 'Next', GREY, (
+            <Box flexDirection="row" gap={1} minWidth={0}>
+              <Box flexShrink={1} minWidth={0}><Text size="footnote" wrap="truncate-end">{track.next === '' ? '–' : track.next}</Text></Box>
+              {track.more > 0 ? <Text size="caption" dimColor>{`+${track.more}`}</Text> : null}
+            </Box>
+          ), 1)}
         </Box>
       </Box>
     ) : (
-      <Box key="card" flexDirection="column" width="100%" borderStyle="round" borderDimColor paddingX={1} gap={1}>
-        {top}
+      <Box key="steps" flexDirection="row" alignItems="center" gap={1} flexGrow={1} flexShrink={1} minWidth={0}>
+        {status}
+        <Box flexShrink={1} minWidth={0}><Text size="footnote" weight="semibold" wrap="truncate-end">{label}</Text></Box>
+      </Box>
+    )
+    const main = (
+      <Box key="main" flexDirection={stack ? 'column' : 'row'} alignItems={stack ? 'stretch' : 'center'} gap={stack ? 1 : 3}>
+        {steps3}
         {rings}
+      </Box>
+    )
+    const chipRow = chips.length > 0 ? <Box key="chips" flexDirection="row" flexWrap="wrap" columnGap={2}>{chips}</Box> : null
+    const card = (
+      <Box key="card" flexDirection="column" width="100%" borderStyle="round" borderDimColor paddingX={1} gap={1}>
+        {main}
         {chipRow}
+        {isOpen ? (
+          <Box key="map" flexDirection={narrow ? 'column' : 'row'} alignItems="flex-end" gap={2}>
+            <Svg source={drawMap(await read($, board), now, MAP)} alt={`Activity map. ${describeBoard(await read($, board))}`} width={240} height={224} />
+            <Box flexDirection="column" gap={1} flexShrink={1} minWidth={0}>
+              {details.map((d, i) => <Text key={`d${i}`} size="caption" dimColor wrap="truncate-end">{d}</Text>)}
+              <Button key="cockpit-fullmap" plain label="Open full map" onPress={() => void quietly(() => openPane($, 'map'))} />
+            </Box>
+          </Box>
+        ) : null}
       </Box>
     )
 

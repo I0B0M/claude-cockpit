@@ -10,9 +10,10 @@ A cockpit for Claude Code: your usage limits and a live map of what Claude is do
 
 **cockpit** replaces the two older mods below with one card above the prompt:
 
-- **Resting:** the current step with "2 of 3", then **Context**, **5-hour**, **Weekly** and **Cache**, each with when it resets. Chips appear only when needed: battery low, files to commit, Modal spend, Hand off.
-- **Opened (⌄):** the activity map slides in, with an **Open full map** link to a Map tab beside the chat.
-- **Grows when it matters:** holds a large delete for your answer (Cancel is the default), shows running workers, and lists what the work produced.
+- **Resting, one card:** on the left a colour bar (green done, yellow now, grey next) with "4 of 7", and under it **Done** (the last finished step), **Now** and **Next** (the next step, then "+N"). On the right four thick rings: **Context**, **5-hour**, **Weekly** and **Cache**. Long step names end in "…"; nothing overlaps.
+- **Alerts, only when they matter:** a line under the card for **Hand off** (context past the hand-off %), a battery under 30% and unplugged, and a Modal job while it runs (with that account's spend). Nothing else.
+- **Opened (⌄):** the card keeps its shape; the activity map comes in underneath, with the reset times beside it and an **Open full map** link to a Map tab beside the chat.
+- **Grows when it matters:** holds a large delete for your answer (Cancel is the default), shows running workers, and lists what the work produced in its pane.
 
 ```
 /plugin install cockpit --marketplace I0B0M/claude-cockpit

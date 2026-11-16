@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { applyPlan, classify, groupMade, parseCheck, parseModalCsv, parseNames, parsePmset } from './model'
+import { applyPlan, classify, groupMade, parseCheck, parseModalCsv, parseNames, parsePmset, ring, segments, shownModal, stepTrack } from './model'
 
 const bash = (command: string, text: string, isError = false) => classify({ tool: 'Bash', input: { command }, text, isError })
 
@@ -116,4 +116,35 @@ test('Modal spend sums this month per named account and skips unnamed rows', () 
     '2026-11-11,old row,v4,1,5.00',
   ].join('\n')
   expect(parseModalCsv(csv, '2026-11', parseNames(['profileA=A', 'profileB=B']))).toEqual({ A: 4.75, B: 9 })
+})
+
+// ── the resting card ────────────────────────────────────────────────────────
+const S = (subject: string, status: 'completed' | 'in_progress' | 'pending') => ({ id: subject, subject, status })
+
+test('the step track: last done, now, the first next and how many more', () => {
+  const list = [S('a', 'completed'), S('b', 'completed'), S('c', 'completed'), S('d', 'in_progress'), S('e', 'pending'), S('f', 'pending'), S('g', 'pending')]
+  expect(stepTrack(list)).toEqual({ done: 'c', now: 'd', next: 'e', more: 2, index: 4, total: 7, states: ['completed', 'completed', 'completed', 'in_progress', 'pending', 'pending', 'pending'] })
+})
+
+test('the step track before any step starts, and when all are done', () => {
+  expect(stepTrack([S('a', 'pending'), S('b', 'pending')])).toMatchObject({ done: '', now: 'a', next: 'b', more: 0, index: 1 })
+  expect(stepTrack([S('a', 'completed'), S('b', 'completed')])).toMatchObject({ done: 'b', now: '', next: '', more: 0, index: 2 })
+  expect(stepTrack([])).toBe(null)
+})
+
+test('the colour bar: green done, yellow now, grey next', () => {
+  const svg = segments(['completed', 'in_progress', 'pending'], 120)
+  expect(svg.match(/<rect /g)?.length).toBe(3)
+  expect(svg.indexOf('#30d158')).toBeLessThan(svg.indexOf('#ffd60a'))
+  expect(svg).toContain('#8e8e9340')
+})
+
+test('big rings are drawn thick, small ones stay thin', () => {
+  expect(ring(40, '#30d158', 30)).toContain('stroke-width="4.5"')
+  expect(ring(40, '#30d158', 14)).toContain('stroke-width="2"')
+})
+
+test('Modal shows only while a Modal job runs, whatever the spend', () => {
+  expect(shownModal({ A: 21, B: 3 }, 0)).toEqual([])
+  expect(shownModal({ A: 21, B: 0 }, 1)).toEqual([['A', 21]])
 })

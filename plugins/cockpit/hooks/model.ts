@@ -35,16 +35,28 @@ export const clockOf = (iso?: string): string => {
 
 export const weekdayOf = (iso?: string): string => (iso ? new Date(iso).toLocaleDateString('en-US', { weekday: 'short' }) : '')
 
-/** A small ring for the island, as SVG source. */
+/** A ring as SVG source: thin on the slim pill (14 px), thick on the resting card (24 px and up). */
 export const ring = (pct: number, color: string, size = 14): string => {
-  const r = size / 2 - 1.5
+  const sw = size >= 24 ? 4.5 : 2
+  const r = size / 2 - sw / 2 - 0.5
   const c = 2 * Math.PI * r
   const p = Math.max(0, Math.min(100, pct))
   const off = c * (1 - p / 100)
   const h = size / 2
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">` +
-    `<circle cx="${h}" cy="${h}" r="${r.toFixed(2)}" fill="none" stroke="${TRACK}" stroke-width="2"/>` +
-    (p > 0 ? `<circle cx="${h}" cy="${h}" r="${r.toFixed(2)}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 ${h} ${h})"/>` : '') +
+    `<circle cx="${h}" cy="${h}" r="${r.toFixed(2)}" fill="none" stroke="${TRACK}" stroke-width="${sw}"/>` +
+    (p > 0 ? `<circle cx="${h}" cy="${h}" r="${r.toFixed(2)}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 ${h} ${h})"/>` : '') +
+    `</svg>`
+}
+
+/** The step colour bar: one block per step, green done, yellow now, grey next. */
+export const segments = (states: readonly StepStatus[], width: number, height = 5): string => {
+  const n = Math.max(1, states.length)
+  const gap = n > 1 ? Math.min(3, width / n / 4) : 0
+  const w = (width - gap * (n - 1)) / n
+  const fill = (s: StepStatus) => (s === 'completed' ? GREEN : s === 'in_progress' ? YELLOW : TRACK)
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">` +
+    states.map((s, i) => `<rect x="${(i * (w + gap)).toFixed(2)}" width="${w.toFixed(2)}" height="${height}" rx="${height / 2}" fill="${fill(s)}"/>`).join('') +
     `</svg>`
 }
 
@@ -107,6 +119,26 @@ export function planLine(list: Step[]): PlanLine | null {
     label: cur >= 0 ? list[cur]!.subject : nextUp?.subject ?? list[list.length - 1]!.subject,
     done,
     isDone: done === list.length,
+  }
+}
+
+export type StepTrack = { done: string; now: string; next: string; more: number; index: number; total: number; states: StepStatus[] }
+
+/** The resting card's left side: the last finished step, the one now, the first one next and how many follow it. */
+export function stepTrack(list: Step[]): StepTrack | null {
+  if (list.length === 0) return null
+  const cur = list.findIndex(s => s.status === 'in_progress')
+  const nowAt = cur >= 0 ? cur : list.findIndex(s => s.status === 'pending')
+  const done = [...list.slice(0, nowAt >= 0 ? nowAt : list.length)].reverse().find(s => s.status === 'completed')
+  const after = list.filter((s, i) => i > nowAt && s.status === 'pending')
+  return {
+    done: done?.subject ?? '',
+    now: nowAt >= 0 ? list[nowAt]!.subject : '',
+    next: nowAt >= 0 ? after[0]?.subject ?? '' : '',
+    more: nowAt >= 0 ? Math.max(0, after.length - 1) : 0,
+    index: nowAt >= 0 ? nowAt + 1 : list.length,
+    total: list.length,
+    states: list.map(s => s.status),
   }
 }
 
@@ -358,6 +390,10 @@ export function parseModalCsv(csv: string, month: string, names: Record<string, 
   }
   return out
 }
+
+/** The Modal chip shows only while a Modal job is running; spend alone never shows it. */
+export const shownModal = (spend: Record<string, number>, running: number): [string, number][] =>
+  running > 0 ? Object.entries(spend).filter(([, v]) => v > 0) : []
 
 export const parseNames = (list: readonly string[]): Record<string, string> =>
   Object.fromEntries(list.map(s => s.split('=')).filter(p => p.length === 2).map(([k, v]) => [k!.trim(), v!.trim()]))

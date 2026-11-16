@@ -39,8 +39,10 @@ test('at rest: the step on top, four named numbers, no map', async ($, on) => {
   await busySession($, on)
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   const json = await drawn(ui)
-  for (const words of ['Render scene 4 of 9', '2 of 3', '18%', 'Context', '184k used', '14%', '5-hour', '5%', 'Weekly']) expect(json).toContain(words)
+  for (const words of ['Render scene 4 of 9', '2 of 3', '18%', 'Context', '14%', '5-hour', '5%', 'Weekly']) expect(json).toContain(words)
+  for (const words of ['"Done"', '"✓ Read band code"', '"Now"', '"Next"', '"Write tests"']) expect(json).toContain(words)
   expect(json).not.toContain('Open full map')
+  expect(json).not.toContain('5-hour resets')
   expect(json).not.toContain('CLAUDE')
   await ui.unmount()
 })
@@ -57,7 +59,7 @@ test('tapping the card slides the map in, in Cockpit colours with no box of its 
   expect(open).toContain('Open full map')
   expect(open).toContain('CLAUDE')
   expect(open).toContain('Render scene 4 of 9')
-  expect(open).toContain('Render the episode · step 2 of 3')
+  expect(open).toContain('5-hour resets')
   expect(open).not.toContain('#e1ac6e') // lot-map copper
   expect(open).not.toContain('#62c7ba') // lot-map teal
   expect(open).not.toContain('width=\\"460\\" height=\\"430\\" rx=\\"12\\"') // lot-map's own ground
