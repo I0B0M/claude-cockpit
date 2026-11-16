@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Cache, Extras, Hold, Outcome, Step, Tab, Task, Usage, Worker } from '../types'
+import type { Board, Cache, Entry, Extras, Hold, Outcome, StationId, Status, Step, Tab, Task, Usage, Worker } from '../types'
+import { classify as stationOf, clean, drawMap, setupFrom, shortModel } from './lotmap/map'
 // @ts-ignore: plain JavaScript, vendored from blast-radius (Apache-2.0)
 import { classify as classifyRisk, measure, resolveDir } from './blast.mjs'
 import {
@@ -25,9 +26,28 @@ const extras = atom({ plugin: 'cockpit', key: 'extras' } as const, { dirty: 0, b
 const tab = atom({ plugin: 'cockpit', key: 'tab' } as const, 'outcomes' as Tab)
 const viewTask = atom({ plugin: 'cockpit', key: 'viewTask' } as const, null as number | null)
 const heldLog = atom({ plugin: 'cockpit', key: 'held' } as const, [] as { at: number; title: string; answer: string }[])
+const board = atom({ plugin: 'cockpit', key: 'board' } as const, { entries: [], counts: {} } as Board)
+
+// The activity map (lot-map's drawing). Only the activity colours are set, in Cockpit's blue and purple, so the
+// greys still follow the app's light or dark theme; no ground of its own, so it sits in the card.
+const MAP = {
+  ...setupFrom({ background: 'transparent', colors: ['accent=#0a84ff', 'active=#64d2ff', 'memory=#bf5af2', 'memoryActive=#da8fff', 'error=#ff453a'] }),
+  compact: true,
+}
+const MAP_KEEP = 80
+const COMMIT_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2.6" fill="none" stroke="#98989d" stroke-width="1.5"/><path d="M1 7h3.4M9.6 7H13" stroke="#98989d" stroke-width="1.5" stroke-linecap="round"/></svg>'
+const batteryIcon = (pct: number): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 11"><rect x=".5" y=".5" width="16.5" height="10" rx="2.6" fill="none" stroke="#98989d"/><rect x="18" y="3.5" width="1.6" height="4" rx=".8" fill="#98989d"/><rect x="2" y="2" width="${Math.max(1, Math.round((13.5 * pct) / 100))}" height="7" rx="1.4" fill="#ff453a"/></svg>`
+/** What the map shows, in words, for a reader that cannot see it. */
+const describeBoard = (b: Board): string => {
+  const busy = [...new Set(b.entries.filter(x => x.status === 'run').map(x => x.station))]
+  return busy.length ? `Busy: ${busy.join(', ')}.` : 'Nothing running.'
+}
+const MAP_CREW = 12
+let mapSeq = 0
 
 const KEEP_OUTCOMES = 300
-const POLL = '0.25'
+const POLL_MS = 250 // how often a held delete looks for your answer: the engine's own timer, no process started
 const HOLD_LIMIT_MS = 10 * 60 * 1000
 const MEDIA = /\.(png|jpe?g|gif|webp|mp4|mov|webm|mp3|wav|m4a|pdf|docx|pptx|xlsx|epub)$/i
 const FIND_MEDIA = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm', 'mp3', 'wav', 'm4a', 'pdf', 'docx', 'pptx', 'xlsx', 'epub'].map(x => `-iname "*.${x}"`).join(' -o ')
@@ -44,6 +64,57 @@ let touched = new Set<string>()
 const previews = new Map<string, string>()
 
 const isNotice = (text: string) => text.trimStart().startsWith('<task-notification>')
+
+type MapStart = { station: StationId; label: string; from?: Entry['from']; status?: Status; agentId?: string; mark?: Entry['mark']; patch?: Partial<Pick<Board, 'model' | 'step'>> }
+
+/** One action lands on the map (lot-map's begin, without its per-name tally). Returns the row's id. */
+async function mapBegin($: EngineInterface, start: MapStart): Promise<string | undefined> {
+  return quietly(async () => {
+    const now = await $.clock.now()
+    const entry: Entry = {
+      id: `${now.toString(36)}-${(mapSeq++).toString(36)}`,
+      station: start.station,
+      label: clean(start.label),
+      from: start.from ?? 'core',
+      startedAt: now,
+      status: start.status ?? 'run',
+      ...(start.status !== undefined ? { endedAt: now } : {}),
+      ...(start.agentId !== undefined ? { agentId: start.agentId } : {}),
+      ...(start.mark !== undefined ? { mark: start.mark } : {}),
+    }
+    const fault = (entry.status === 'err' || entry.status === 'block') && entry.station !== 'you'
+    await update($, board, b => {
+      const from = b.entries.length + 1 - MAP_KEEP
+      return {
+        ...b,
+        ...start.patch,
+        entries: [...(from <= 0 ? b.entries : b.entries.filter((x, i) => i >= from || x.status === 'run')), entry],
+        counts: { ...b.counts, [entry.station]: (b.counts[entry.station] ?? 0) + 1 },
+        ...(fault ? { faults: { ...b.faults, [entry.station]: (b.faults?.[entry.station] ?? 0) + 1 } } : {}),
+        ...(entry.agentId !== undefined && !(b.agents ?? []).includes(entry.agentId) ? { agents: [...(b.agents ?? []), entry.agentId].slice(-MAP_CREW) } : {}),
+      }
+    })
+    return entry.id
+  })
+}
+
+/** A row on the map is answered: it stops pulsing, as a fault when it failed or was refused. */
+async function mapFinish($: EngineInterface, id: string | undefined, status: Status): Promise<void> {
+  if (id === undefined) return
+  await quietly(async () => {
+    const now = await $.clock.now()
+    await update($, board, b => {
+      const row = b.entries.find(x => x.id === id && x.status === 'run')
+      if (row === undefined) return b
+      const fault = status === 'err' || status === 'block'
+      return {
+        ...b,
+        entries: b.entries.map(x => (x === row ? { ...x, status, endedAt: now } : x)),
+        ...(fault ? { faults: { ...b.faults, [row.station]: (b.faults?.[row.station] ?? 0) + 1 } } : {}),
+      }
+    })
+  })
+}
 
 /** Anything that goes wrong in Cockpit must never reach the tool, the turn or the conversation. */
 async function quietly<T>(work: () => Promise<T>): Promise<T | undefined> {
@@ -175,7 +246,6 @@ export const register: Register = (on, options) => {
   const handoffAt = Number(o.handoffAt ?? 55) || 0
   const modalNames = parseNames(Array.isArray(o.modalNames) ? (o.modalNames as string[]) : [])
   const modalCap = Number(o.modalCap ?? 29) || 29
-  const hidden = new Set(Array.isArray(o.hiddenRows) ? (o.hiddenRows as string[]) : ['session-hud', 'lot-map', 'cockpit-map', 'blast-radius'])
   let cwd = ''
   let marker = ''
 
@@ -236,6 +306,8 @@ export const register: Register = (on, options) => {
         return
       }
       if (e.text === '' || isNotice(e.text)) return
+      await update($, board, b => (b.faults === undefined ? b : { ...b, faults: {} }))
+      await mapBegin($, { station: 'you', label: 'New message', from: 'inbound', status: 'ok' })
       if (asksForOutcomes(e.text)) {
         await update($, viewTask, () => null)
         await openPane($, 'outcomes')
@@ -251,6 +323,22 @@ export const register: Register = (on, options) => {
       await $.process.run(['touch', marker], { timeoutMs: 5000 })
     })
     return next(e)
+  })
+
+  // Each model step lights the model station while it thinks.
+  on('turn.step', async function* ($, e, next) {
+    const isMain = e.agentId === undefined
+    const id = await mapBegin($, {
+      station: 'model',
+      label: `${shortModel(e.model)} · step ${e.index + 1}${isMain ? '' : ' · subagent'}`,
+      from: isMain ? 'core' : 'agents',
+      ...(isMain ? { patch: { model: e.model, step: e.index + 1 } } : { agentId: e.agentId }),
+    })
+    try {
+      return yield* next(e)
+    } finally {
+      await mapFinish($, id, 'ok')
+    }
   })
 
   on('agent.spawn', async ($, e, next) => {
@@ -276,8 +364,15 @@ export const register: Register = (on, options) => {
           ...(e.answer ? { result: firstLine(e.answer, 90) } : {}),
           cost: w.cost + (e.usage ? costOf(w.model, e.usage) : 0),
         })))
+        await update($, board, b => ({
+          ...b,
+          agents: (b.agents ?? []).filter(a => a !== id),
+          entries: b.entries.map(r => (r.status === 'run' && r.agentId === id ? { ...r, status: 'ok' as const, endedAt: at } : r)),
+        }))
         return
       }
+      await mapBegin($, { station: 'you', label: e.isAborted ? 'Stopped' : 'Answer ready', status: e.isAborted ? 'err' : 'ok', ...(e.isAborted ? {} : { mark: 'done' as const }) })
+      await update($, board, b => ({ ...b, entries: b.entries.map(r => (r.status === 'run' && r.from === 'core' ? { ...r, status: 'ok' as const, endedAt: at } : r)) }))
       const u = e.usage
       if (u) {
         const total = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
@@ -311,7 +406,7 @@ export const register: Register = (on, options) => {
       if (weighed) {
         while ((await read($, hold)) !== null) {
           if (next.signal.aborted) return { deny: 'Cockpit held this command and did not run it: the turn was interrupted. Do not retry it unless the user asks you to.' }
-          await $.process.run(['sleep', POLL], { timeoutMs: 5000 })
+          await $.clock.sleep(POLL_MS)
         }
         decision = null
         holding = true
@@ -322,7 +417,7 @@ export const register: Register = (on, options) => {
           while (decision === null) {
             if (next.signal.aborted) { decision = 'interrupted'; break }
             if ((await $.clock.now()) - startedAt > HOLD_LIMIT_MS) { decision = 'timeout'; break }
-            await $.process.run(['sleep', POLL], { timeoutMs: 5000 })
+            await $.clock.sleep(POLL_MS)
           }
           answer = decision ?? 'error'
         } finally {
@@ -346,9 +441,14 @@ export const register: Register = (on, options) => {
       if (now) await quietly(() => update($, workers, list => list.map(w => (w.id === id ? { ...w, now } : w))))
     }
 
+    const mapId = await mapBegin($, { ...stationOf(tool, input, MAP), ...(e.agentId === undefined ? { from: 'core' as const } : { from: 'agents' as const, agentId: e.agentId }) })
     let ran
     try {
       ran = await next(e)
+      await mapFinish($, mapId, 'deny' in ran && ran.deny !== undefined ? 'block' : 'isError' in ran && ran.isError === true ? 'err' : 'ok')
+    } catch (err) {
+      await mapFinish($, mapId, 'err')
+      throw err
     } finally {
       if (isModal) {
         await quietly(() => update($, extras, x => ({ ...x, modalRunning: Math.max(0, x.modalRunning - 1) })))
@@ -364,7 +464,7 @@ export const register: Register = (on, options) => {
         if (PLAN_TOOL.test(tool)) await update($, steps, list => applyPlan(list, input))
         else if (tool === 'TaskCreate') {
           const id = /Task #(\d+)/.exec(text)?.[1] ?? (('result' in ran ? (ran.result as { task?: { id?: unknown } })?.task?.id : undefined) as string | undefined)
-          if (id !== undefined) await update($, steps, list => [...list.filter(s => s.id !== String(id)), { id: String(id), subject: String(input.subject ?? ''), status: 'pending' }])
+          if (id !== undefined) await update($, steps, list => [...list.filter(s => s.id !== String(id)), { id: String(id), subject: String(input.subject ?? ''), status: 'pending' as const }])
         } else if (tool === 'TaskUpdate') await update($, steps, list => applyTaskUpdate(list, input))
         else if (WRAP_TOOL.test(tool)) {
           const n = await currentTask($)
@@ -386,14 +486,6 @@ export const register: Register = (on, options) => {
       return next.called ? next(e) : { deny: 'Cockpit held this command and did not run it: it hit an error while waiting for an answer. Do not retry it unless the user asks you to.' }
     }
     return next(e)
-  })
-
-  // Cockpit owns the band: the rows it replaces step aside. Their panes and commands keep working.
-  on('ui.render', { plugin: '*', component: 'AbovePromptList' }, async ($, e, next) => {
-    if (e.surface === 'terminal' || !e.props.rows.some(r => r.plugin === P)) return next(e)
-    const mine = e.props.rows.filter(r => r.plugin === P)
-    const rest = e.props.rows.filter(r => r.plugin !== P && !hidden.has(r.plugin))
-    return next({ ...e, props: { ...e.props, rows: [...mine, ...rest] } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -435,7 +527,7 @@ export const register: Register = (on, options) => {
     const status = held ? <Text color={RED}>●</Text> : running.length > 0 || e.props.isWorking ? <Text color={YELLOW}>●</Text> : <Text color={GREEN}>✓</Text>
     const label = held ? 'Waiting on you' : plan ? plan.label : task ? task.ask : 'Ready'
     const done = task?.endedAt !== undefined && !e.props.isWorking && (results.length > 0 || (task.left?.length ?? 0) > 0 || plan !== null)
-    const chips: unknown[] = []
+    const chips: RenderChildren[] = []
     if (done && task) {
       const made = results.filter(r => r.ok).length
       const leftN = task.left?.length ?? 0
@@ -443,10 +535,10 @@ export const register: Register = (on, options) => {
     }
     const doneTeam = team.filter(w => w.status !== 'run')
     if (running.length === 0 && doneTeam.length > 0) chips.push(<Text key="team" size="footnote" dimColor>✓ {doneTeam.length} {doneTeam.length === 1 ? 'worker' : 'workers'} · ${doneTeam.reduce((s, w) => s + w.cost, 0).toFixed(2)}</Text>)
-    if (x.dirty > 0) chips.push(<Text key="dirty" size="footnote" color={YELLOW}>● {x.dirty} not committed</Text>)
+    if (x.dirty > 0) chips.push(<Box key="dirty" flexDirection="row" alignItems="center" gap={1}><Svg source={COMMIT_ICON} alt="" width={14} height={14} /><Text size="footnote">{`${x.dirty} ${x.dirty === 1 ? 'file' : 'files'} to commit`}</Text></Box>)
     const modalShown = Object.entries(x.modal).filter(([, v]) => x.modalRunning > 0 || v >= 20)
-    for (const [name, v] of modalShown) chips.push(<Text key={`modal-${name}`} size="footnote" color={v >= modalCap - 2 ? RED : v >= 20 ? ORANGE : undefined}>Modal {name} ${Math.round(v)} / {modalCap}</Text>)
-    if (x.battery && x.battery.onBattery && x.battery.percent < 30) chips.push(<Text key="battery" size="footnote" color={RED}>● Battery {x.battery.percent}% · plug in</Text>)
+    for (const [name, v] of modalShown) chips.push(<Text key={`modal-${name}`} size="footnote" color={v >= modalCap - 2 ? RED : v >= 20 ? ORANGE : undefined}>{`● Modal ${name} $${Math.round(v)} of $${modalCap}`}</Text>)
+    if (x.battery && x.battery.onBattery && x.battery.percent < 30) chips.push(<Box key="battery" flexDirection="row" alignItems="center" gap={1}><Svg source={batteryIcon(x.battery.percent)} alt="" width={20} height={11} /><Text size="footnote" color={RED}>{`${x.battery.percent}%`}</Text><Text size="footnote" dimColor>Plug in</Text></Box>)
     if (pastHandoff) chips.push(<Button key="cockpit-handoff" plain label="Hand off" onPress={() => void quietly(() => $.prompt.fill({ text: 'Write the handoff for the next chat, then tell me it is ready.', mode: 'replace' }))} />)
 
     const island = (
@@ -465,7 +557,7 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    const above: unknown[] = []
+    const above: RenderChildren[] = []
     if (held) {
       const onlyHere = held.onlyHere
       above.push(
@@ -511,38 +603,71 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const details = isOpen ? (
-      <Box key="details" flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-        {([
-          ['Context', ctx, ctxColor, u?.contextTokens != null ? `${human(u.contextTokens)} used` : ''],
-          ['5-hour', five?.percentUsed ?? null, five ? heat(five.percentUsed) : GREY, five?.resetsAt ? `resets ${clockOf(five.resetsAt)}` : ''],
-          ['Weekly', week?.percentUsed ?? null, week ? heat(week.percentUsed) : GREY, week?.resetsAt ? `resets ${weekdayOf(week.resetsAt)}` : ''],
-          ['Cache', left === null ? null : left > 0 ? (left / CACHE_TTL_MS) * 100 : 0, cacheColor, c?.hit != null ? `${Math.round(c.hit * 100)}% hit` : ''],
-        ] as [string, number | null, string, string][]).map(([name, pct, color, meta]) => (
-          <Box key={`d-${name}`} flexDirection="row" alignItems="center" gap={2}>
-            <Box width={8}><Text size="footnote" dimColor>{name}</Text></Box>
-            <Svg source={bar(pct ?? 0, color)} alt={`${name} ${Math.round(pct ?? 0)}%`} width={160} height={4} />
-            <Box width={6}><Text size="footnote" tabular>{name === 'Cache' ? (left === null ? '–' : left > 0 ? countdown(left) : 'cold') : pct === null ? '–' : `${Math.round(pct)}%`}</Text></Box>
-            <Text size="caption" dimColor>{meta}</Text>
-          </Box>
-        ))}
-        <Box flexDirection="row" gap={2}>
-          <Button key="cockpit-panel" plain dimColor label="Open panel" onPress={() => void quietly(() => openPane($, 'now'))} />
+    // The resting card: the step on top, then the four numbers with their names. Opened, the map slides in on the left.
+    const meta = (text: string) => (narrow || text === '' ? null : <Text size="caption" dimColor wrap="truncate-end">{text}</Text>)
+    const cell = (key: string, pct: number | null, color: string, value: string, name: string, sub: string, alt: string) => (
+      <Box key={key} flexDirection="row" alignItems="center" gap={1} width={narrow ? 11 : 17}>
+        <Svg source={ring(pct ?? 0, color, 26)} alt={alt} width={26} height={26} />
+        <Box flexDirection="column" flexShrink={1}>
+          <Text size="footnote" weight="semibold" tabular color={color === GREEN || color === GREY ? undefined : color}>{value}</Text>
+          <Text size="caption" dimColor>{name}</Text>
+          {meta(sub)}
         </Box>
       </Box>
-    ) : null
+    )
+    const rings = (
+      <Box key="rings" flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
+        {cell('r-ctx', ctx, ctxColor, ctx === null ? '–' : `${Math.round(ctx)}%`, 'Context', u?.contextTokens != null ? `${human(u.contextTokens)} used` : '', 'Context used')}
+        {cell('r-5h', five?.percentUsed ?? null, five ? heat(five.percentUsed) : GREY, five ? `${Math.round(five.percentUsed)}%` : '–', '5-hour', five?.resetsAt ? `resets ${clockOf(five.resetsAt)}` : '', '5-hour limit used')}
+        {cell('r-wk', week?.percentUsed ?? null, week ? heat(week.percentUsed) : GREY, week ? `${Math.round(week.percentUsed)}%` : '–', 'Weekly', week?.resetsAt ? `resets ${weekdayOf(week.resetsAt)}` : '', 'Weekly limit used')}
+        {narrow || left === null ? null : cell('r-cache', left > 0 ? (left / CACHE_TTL_MS) * 100 : 0, cacheColor, left > 0 ? countdown(left) : 'cold', 'Cache', c?.hit != null ? `${Math.round(c.hit * 100)}% hit` : '', 'Cache time left')}
+      </Box>
+    )
+    const progress = plan && !plan.isDone ? (isOpen && task ? `${task.ask} · step ${plan.index} of ${plan.total}` : `${plan.index} of ${plan.total}`) : plan?.isDone ? `${plan.total} of ${plan.total}` : ''
+    const top = (
+      <Box key="top" flexDirection="row" alignItems="center" gap={1}>
+        {status}
+        <Box flexGrow={1} flexShrink={1}><Text size="footnote" weight="semibold" wrap="truncate-end">{label}</Text></Box>
+        {progress && !narrow ? <Box flexShrink={2}><Text size="footnote" tabular dimColor wrap="truncate-end">{progress}</Text></Box> : null}
+        <Button key="cockpit-more" plain dimColor label={isOpen ? '⌃' : '⌄'} onPress={() => void quietly(() => update($, open, v => !v))} />
+      </Box>
+    )
+    const chipRow = chips.length > 0 ? <Box key="chips" flexDirection="row" flexWrap="wrap" gap={1}>{chips}</Box> : null
+    const card = isOpen ? (
+      <Box key="card" flexDirection="column" width="100%" borderStyle="round" borderDimColor paddingX={1} gap={1}>
+        {top}
+        <Box flexDirection={narrow ? 'column' : 'row'} alignItems="center" gap={2}>
+          <Svg source={drawMap(await read($, board), now, MAP)} alt={`Activity map. ${describeBoard(await read($, board))}`} width={196} height={183} />
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} gap={1}>
+            {rings}
+            {chipRow}
+            <Button key="cockpit-fullmap" plain label="Open full map" onPress={() => void quietly(() => openPane($, 'map'))} />
+          </Box>
+        </Box>
+      </Box>
+    ) : (
+      <Box key="card" flexDirection="column" width="100%" borderStyle="round" borderDimColor paddingX={1} gap={1}>
+        {top}
+        {rings}
+        {chipRow}
+      </Box>
+    )
 
+    // A card above (a delete, workers) folds this into the slim pill, so the numbers stay and the map waits.
     return (
       <Box flexDirection="column" width="100%" gap={1}>
         {above}
-        {details}
-        {island}
+        {above.length > 0 ? island : card}
       </Box>
     )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Link, Image } = $.ui.resolve(e)
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = els
+    // The terminal has no pictures: previews and the map are left out there.
+    const Image = 'Image' in els ? els.Image : undefined
+    const Svg = 'Svg' in els ? els.Svg : undefined
     const which = await read($, tab)
     const allTasks = await read($, tasks)
     const pick = await read($, viewTask)
@@ -555,14 +680,14 @@ export const register: Register = (on, options) => {
 
     const tabs = (
       <Box key="tabs" flexDirection="row" gap={1}>
-        {(['now', 'workers', 'outcomes'] as Tab[]).map(t => (
-          <Button key={`tab-${t}`} variant={t === which ? 'primary' : 'secondary'} label={t === 'now' ? 'Now' : t === 'workers' ? 'Workers' : 'Outcomes'} onPress={() => void quietly(() => update($, tab, () => t))} />
+        {(['now', 'workers', 'outcomes', 'map'] as Tab[]).map(t => (
+          <Button key={`tab-${t}`} variant={t === which ? 'primary' : 'secondary'} label={t === 'now' ? 'Now' : t === 'workers' ? 'Workers' : t === 'outcomes' ? 'Outcomes' : 'Map'} onPress={() => void quietly(() => update($, tab, () => t))} />
         ))}
       </Box>
     )
     const heading = (s: string) => <Text key={`h-${s}`} size="caption" weight="semibold" dimColor>{s.toUpperCase()}</Text>
 
-    let body: unknown
+    let body: RenderChildren
     if (which === 'outcomes') {
       if (!task) {
         body = <Text dimColor>Nothing yet. Results show here when a task finishes: files made, pages published, commits, PRs, tickets and checks.</Text>
@@ -580,7 +705,7 @@ export const register: Register = (on, options) => {
               {o.href ? <Link href={o.href} label="Open" /> : o.path ? <Link href={`file://${o.path}`} label="Open" /> : null}
             </Box>
             {o.detail ? <Text size="caption" dimColor wrap="truncate-end">   {o.detail}</Text> : null}
-            {o.path && previews.has(o.path) ? <Image source={{ png: previews.get(o.path)! }} columns={24} rows={8} alt={o.title} /> : null}
+            {Image && o.path && previews.has(o.path) ? <Image source={{ png: previews.get(o.path)! }} columns={24} rows={8} alt={o.title} /> : null}
           </Box>
         )
         body = (
@@ -605,6 +730,22 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
+    } else if (which === 'map') {
+      const b = await read($, board)
+      const w = Math.min(460, Math.max(240, e.props.bodyColumns * 7))
+      body = (
+        <Box flexDirection="column" gap={1}>
+          {Svg ? <Svg source={drawMap(b, now, { ...MAP, compact: false })} alt={`Activity map. ${describeBoard(b)}`} width={w} height={Math.round((w * 430) / 460)} /> : <Text dimColor>{describeBoard(b)}</Text>}
+          {heading('Recent')}
+          {[...b.entries].reverse().slice(0, 12).map(r => (
+            <Box key={`m-${r.id}`} flexDirection="row" gap={1}>
+              <Text size="footnote" color={r.status === 'run' ? BLUE : r.status === 'ok' ? GREEN : RED}>{r.status === 'run' ? '●' : r.status === 'ok' ? '✓' : '✕'}</Text>
+              <Box width={9}><Text size="footnote" dimColor>{r.station}</Text></Box>
+              <Box flexGrow={1} flexShrink={1}><Text size="footnote" wrap="truncate-end">{r.label}</Text></Box>
+            </Box>
+          ))}
+        </Box>
+      )
     } else if (which === 'workers') {
       body = team.length === 0 ? <Text dimColor>No workers this task.</Text> : (
         <Box flexDirection="column" gap={1}>

@@ -144,7 +144,7 @@ export const firstLine = (text: string, max = 90): string => {
 }
 
 const base = (p: string): string => p.replace(/\/+$/, '').split('/').pop() ?? p
-const dirOf = (p: string): string => p.replace(/\/+$/, '').split('/').slice(-3, -1).join('/')
+const dirOf = (p: string): string => p.replace(/\/+$/, '').split('/').slice(-3, -1).filter(Boolean).join('/')
 
 /** What a subagent's call says about what it is doing, in a few words. */
 export function activityOf(tool: string, input: Record<string, unknown>): string | undefined {
@@ -163,7 +163,6 @@ export const asksForOutcomes = (text: string): boolean =>
   /\b(what happened|what did you (do|change|make)|show (me )?(the )?(results|outcomes)|outcomes?\b|results\b|what got done|what changed)\b/i.test(text)
 
 // ── test and check output ───────────────────────────────────────────────────
-export const CHECK_RE = /\b(test|tests|pytest|jest|vitest|mocha|bun test|plugin test|lint|eslint|ruff|flake8|tsc|typecheck|type-check|mypy|validate|check)\b/i
 
 export type CheckCount = { passed: number | null; failed: number | null; errors: number | null }
 
@@ -180,12 +179,45 @@ export function parseCheck(text: string): CheckCount | null {
   return { passed, failed, errors }
 }
 
+const WORD = (w: string) => new RegExp(`(^|[^a-z0-9])(${w})([^a-z0-9]|$)`, 'i')
+const LINT = WORD('lint|eslint|ruff|flake8|biome|prettier')
+const TYPES = WORD('tsc|typecheck|type-check|mypy|pyright')
+const VALIDATE = WORD('validate')
+const TESTS = WORD('test|tests|pytest|jest|vitest|mocha|unittest')
+
 function checkName(command: string): string {
-  if (/\b(lint|eslint|ruff|flake8)\b/i.test(command)) return 'Lint'
-  if (/\b(tsc|typecheck|type-check|mypy)\b/i.test(command)) return 'Type check'
-  if (/\bvalidate\b/i.test(command)) return 'Validation'
-  if (/\b(test|tests|pytest|jest|vitest|mocha)\b/i.test(command)) return 'Tests'
+  if (LINT.test(command)) return 'Lint'
+  if (TYPES.test(command)) return 'Type check'
+  if (VALIDATE.test(command)) return 'Validation'
+  if (TESTS.test(command)) return 'Tests'
   return 'Check'
+}
+
+const RUNNER = /^(pytest|jest|vitest|mocha|eslint|ruff|flake8|tsc|mypy|pyright|biome|prettier)$/
+const CHECK_SCRIPT = WORD('test|tests|lint|check|checks|validate|typecheck')
+/**
+ * The part of a shell line that runs a check, or undefined. Only the command each part runs counts: a test file named
+ * as an argument (`sed -n 1,60p band.test.tsx`, `cat tests/x.py`, `grep lint`) is reading, not checking.
+ */
+export function checkPart(command: string): string | undefined {
+  for (const part of command.split(/&&|\|\||;|\|/)) {
+    const words = part.trim().split(/\s+/).filter(w => w !== '' && !/^[A-Z_][A-Z0-9_]*=/.test(w))
+    while (/^(npx|bunx|uvx|time|nice)$/.test(words[0] ?? '') || (words[0] === 'pnpm' && words[1] === 'exec') || (/^(uv|poetry)$/.test(words[0] ?? '') && words[1] === 'run')) words.splice(0, words[0] === 'pnpm' || words[0] === 'uv' || words[0] === 'poetry' ? 2 : 1)
+    const [first = '', second = '', third = ''] = words
+    const base = (w: string) => w.split('/').pop() ?? w
+    const hit =
+      RUNNER.test(base(first)) ||
+      (/^(npm|pnpm|yarn|bun)$/.test(first) && (second === 'test' || (second === 'run' && CHECK_SCRIPT.test(third)) || (first === 'yarn' && CHECK_SCRIPT.test(second)))) ||
+      (/^python3?$/.test(first) && ((second === '-m' && /^(pytest|unittest|mypy|ruff)$/.test(third)) || (/\.py$/.test(second) && CHECK_SCRIPT.test(base(second))))) ||
+      (/^(node|bash|sh|zsh|deno)$/.test(first) && CHECK_SCRIPT.test(base(second)) && /\.(m?js|ts|sh)$/.test(second)) ||
+      (first === 'claude' && second === 'plugin' && /^(test|validate)$/.test(third)) ||
+      (first === 'go' && second === 'test') ||
+      (first === 'cargo' && /^(test|clippy|check)$/.test(second)) ||
+      (first === 'make' && CHECK_SCRIPT.test(second)) ||
+      (/\//.test(first) && /\.(sh|py|m?js)$/.test(first) && CHECK_SCRIPT.test(base(first)))
+    if (hit) return part.trim()
+  }
+  return undefined
 }
 
 // ── what counts as a result ─────────────────────────────────────────────────
@@ -268,8 +300,9 @@ export function classify(call: Call): Found | null {
     return /Everything up-to-date/.test(text) ? null : { kind: 'push', title: `Pushed ${m?.[2] ?? 'the branch'}`, ...(m ? { detail: repoOf(text) || undefined } : {}), ok }
   }
 
-  if (CHECK_RE.test(cmd) && !/\b(git|gh|grep|rg|cat|ls|find)\b\s/.test(cmd.trim().split(/\s+/).slice(0, 1).join(' ') + ' ')) {
-    const name = checkName(cmd)
+  const check = checkPart(cmd)
+  if (check !== undefined) {
+    const name = checkName(check)
     const n = parseCheck(text)
     const failed = (n?.failed ?? 0) > 0 || (n?.errors ?? 0) > 0 || isError
     const counts = n ? [n.failed ? `${n.failed} failed` : '', n.errors ? `${n.errors} errors` : '', n.passed !== null ? `${n.passed} passed` : ''].filter(Boolean).join(', ') : ''

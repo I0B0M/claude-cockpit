@@ -1,8 +1,8 @@
 // Copyright 2026 Anthropic PBC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Vendored unchanged from anthropics/claude-code-playground, claude-code/mods/blast-radius/hooks/blast-radius.mjs:
-// what counts as risky (classify) and how much it would change (measure). Cockpit adds only the exports
+// Vendored from anthropics/claude-code-playground, claude-code/mods/blast-radius/hooks/blast-radius.mjs:
+// what counts as risky (classify) and how much it would change (measure). Cockpit adds LIST_MAX and the exports
 // at the end and draws its own card. See NOTICE.
 
 // ---- What counts as risky -------------------------------------------------
