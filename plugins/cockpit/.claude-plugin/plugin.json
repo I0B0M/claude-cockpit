@@ -1,0 +1,46 @@
+{
+  "name": "cockpit",
+  "version": "0.1.0",
+  "description": "One line above the prompt: task, context, 5-hour and weekly. Grows to hold a delete, show workers, and show what the work produced.",
+  "author": { "name": "I0B0M", "url": "https://github.com/I0B0M" },
+  "homepage": "https://github.com/I0B0M/claude-cockpit",
+  "repository": "https://github.com/I0B0M/claude-cockpit",
+  "license": "MIT",
+  "keywords": ["mod", "usage", "context", "outcomes", "subagents", "safety"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "cacheMinutes": {
+      "type": "string",
+      "title": "Prompt cache lifetime (minutes)",
+      "options": ["60", "5"],
+      "default": "60",
+      "description": "60 if your sessions use the 1-hour prompt cache, 5 for the default cache."
+    },
+    "handoffAt": {
+      "type": "string",
+      "title": "Hand off at context %",
+      "default": "55",
+      "description": "From this context fill the context ring turns orange and a Hand off button appears. Leave empty to turn it off."
+    },
+    "modalNames": {
+      "type": "string",
+      "multiple": true,
+      "title": "Modal accounts",
+      "default": [],
+      "description": "Profile=name pairs, such as myprofile=A. The Modal chip reads docs/modal-spend.csv in the session folder and shows only the accounts named here."
+    },
+    "modalCap": {
+      "type": "string",
+      "title": "Modal monthly cap ($)",
+      "default": "29",
+      "description": "The Modal chip turns orange at $20 and red within $2 of this cap."
+    },
+    "hiddenRows": {
+      "type": "string",
+      "multiple": true,
+      "title": "Bands to hide",
+      "default": ["session-hud", "lot-map", "cockpit-map", "blast-radius"],
+      "description": "Other mods' rows above the prompt that Cockpit replaces. Their panes and commands keep working."
+    }
+  }
+}
