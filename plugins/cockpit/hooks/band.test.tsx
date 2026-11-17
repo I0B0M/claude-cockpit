@@ -91,6 +91,23 @@ test('a narrow band keeps context, 5-hour and weekly', async ($, on) => {
   await ui.unmount()
 })
 
+test('stacked under the steps, the rings spread across the full width and show their reset times', async ($, on) => {
+  mock.clock(on)
+  await busySession($, on)
+  const ringsOf = (json: string) => json.slice(json.indexOf('"Next"'), json.indexOf('"5-hour"'))
+  const stacked = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 80 } })
+  const json = await drawn(stacked)
+  expect(ringsOf(json)).toContain('"justifyContent":"space-between"')
+  expect(json).toContain('"resets ')
+  expect(json).toContain('"184k used"')
+  await stacked.unmount()
+  const wide = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const row = await drawn(wide)
+  expect(ringsOf(row)).not.toContain('space-between')
+  expect(row).not.toContain('"resets ')
+  await wide.unmount()
+})
+
 test('the terminal and surveys are left alone', async ($, on) => {
   on('ui.render', (($: never, e: never) => { const { Text } = ($ as EngineInterface).ui.resolve(e) as { Text: never }; return h(Text, {}, 'below') }) as never)
   for (const [surface, hasSurvey] of [['terminal', false], ['desktop', true]] as const) {

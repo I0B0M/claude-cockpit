@@ -582,12 +582,20 @@ export const register: Register = (on, options) => {
     // Opened, the same card keeps its shape and the map comes in underneath.
     const track = stepTrack(await read($, steps))
     const stack = e.props.bodyColumns < 96
+    // Stacked under the steps, the rings get a row of their own: they spread across it and each names its detail
+    // (reset time, tokens used, cache hit), so the row has no empty right half.
+    const spread = stack
     const cell = (key: string, pct: number | null, color: string, value: string, name: string, sub: string, alt: string) => (
-      <Box key={key} flexDirection="row" alignItems="center" gap={1} width={11} flexShrink={0}>
+      <Box key={key} flexDirection="row" alignItems="center" gap={1} {...(spread ? { flexShrink: 1, minWidth: 0 } : { width: 11, flexShrink: 0 })}>
         <Svg source={ring(pct ?? 0, color, 28)} alt={sub === '' ? alt : `${alt}, ${sub}`} width={28} height={28} />
         <Box flexDirection="column" flexShrink={1} minWidth={0}>
           <Text size="footnote" weight="semibold" tabular wrap="truncate-end" color={color === GREEN || color === GREY ? undefined : color}>{value}</Text>
-          <Text size="caption" dimColor wrap="truncate-end">{name}</Text>
+          {spread && !narrow && sub !== '' ? (
+            <Box flexDirection="row" gap={1} minWidth={0}>
+              <Text size="caption" dimColor>{name}</Text>
+              <Box flexShrink={1} minWidth={0}><Text size="caption" dimColor wrap="truncate-end">{sub}</Text></Box>
+            </Box>
+          ) : <Text size="caption" dimColor wrap="truncate-end">{name}</Text>}
         </Box>
       </Box>
     )
@@ -599,7 +607,7 @@ export const register: Register = (on, options) => {
       c?.hit != null ? `Cache: ${Math.round(c.hit * 100)}% hit` : '',
     ].filter(Boolean)
     const rings = (
-      <Box key="rings" flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+      <Box key="rings" flexDirection="row" alignItems="center" columnGap={1} {...(spread ? { width: '100%', justifyContent: 'space-between' } : { flexShrink: 0 })}>
         {cell('r-5h', five?.percentUsed ?? null, five ? heat(five.percentUsed) : GREY, five ? `${Math.round(five.percentUsed)}%` : '–', '5-hour', five?.resetsAt ? `resets ${clockOf(five.resetsAt)}` : '', '5-hour limit used')}
         {cell('r-wk', week?.percentUsed ?? null, week ? heat(week.percentUsed) : GREY, week ? `${Math.round(week.percentUsed)}%` : '–', 'Weekly', week?.resetsAt ? `resets ${weekdayOf(week.resetsAt)}` : '', 'Weekly limit used')}
         {cell('r-ctx', ctx, ctxColor, ctx === null ? '–' : `${Math.round(ctx)}%`, 'Context', u?.contextTokens != null ? `${human(u.contextTokens)} used` : '', 'Context used')}
@@ -621,7 +629,7 @@ export const register: Register = (on, options) => {
         </Box>
         <Box flexDirection="row" columnGap={2}>
           {column('c-done', 'Done', GREEN, <Text size="footnote" dimColor wrap="truncate-end">{track.done === '' ? '–' : `✓ ${track.done}`}</Text>, 1)}
-          {column('c-now', 'Now', YELLOW, <Text size="footnote" weight="semibold" wrap="truncate-end">{held ? 'Waiting on you' : track.now === '' ? 'All done' : track.now}</Text>, 1.3)}
+          {column('c-now', 'Now', YELLOW, <Text size="footnote" weight="semibold" wrap="truncate-end">{held ? 'Waiting on you' : track.now === '' ? 'All done' : track.now}</Text>, 1)}
           {column('c-next', 'Next', GREY, (
             <Box flexDirection="row" gap={1} minWidth={0}>
               <Box flexShrink={1} minWidth={0}><Text size="footnote" wrap="truncate-end">{track.next === '' ? '–' : track.next}</Text></Box>
