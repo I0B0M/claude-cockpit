@@ -1,0 +1,11 @@
+Cockpit includes code from two other projects.
+
+hooks/blast.mjs
+  From anthropics/claude-code-playground, claude-code/mods/blast-radius/hooks/blast-radius.mjs.
+  Copyright 2026 Anthropic PBC. Licensed under the Apache License, Version 2.0
+  (https://www.apache.org/licenses/LICENSE-2.0). Changes: a LIST_MAX constant and an export line at the end.
+
+hooks/lotmap/map.ts, hooks/lotmap/text.ts
+  From alexeyw/lot-map at f2308655d3a37396ab2a327521b38622c1aa0a38.
+  Copyright (c) 2026 Aleksei Volodin. MIT License, in hooks/lotmap/LICENSE.
+  Changes: the band's compact drawing mode, the system font, and the types import.
